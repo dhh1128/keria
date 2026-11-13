@@ -345,14 +345,33 @@ class AgentResourceEnd:
         sigs = body["sigs"]
 
         ctrlHab = agent.hby.habByName(caid, ns="agent")
-        ctrlHab.rotate(serder=rot, sigers=[core.Siger(qb64=sig) for sig in sigs])
+        kevers = agent.hby.kevers
 
+        # Only the next rotation of this controller may be applied here.
+        if (
+            rot.pre != caid
+            or rot.ilk != kering.Ilks.rot
+            or rot.sn != kevers[caid].sn + 1
+        ):
+            raise falcon.HTTPBadRequest(
+                description=f"'rot' is not the next rotation event for {caid}"
+            )
+
+        # The request must be signed by this controller, with the keys the
+        # rotation establishes, before anything is changed.
         try:
-            self.authn.inbound(req)
+            self.authn.inbound(req, expect=caid, verfers=rot.verfers)
         except (kering.AuthNError, ValueError) as ex:
             raise falcon.HTTPForbidden(
                 description="invalid signature on request"
             ) from ex
+
+        ctrlHab.rotate(serder=rot, sigers=[core.Siger(qb64=sig) for sig in sigs])
+
+        if kevers[caid].serder.said != rot.said:
+            raise falcon.HTTPBadRequest(
+                description=f"rotation event for {caid} was not accepted"
+            )
 
         sxlt = body["sxlt"]
         agent.mgr.sxlt = sxlt
