@@ -396,12 +396,12 @@ class AgentResourceEnd:
             elif "prxs" in val:
                 hab = agent.hby.habs[pre]
                 verfers = hab.kever.verfers
-                digers = hab.kever.digers
+                digers = hab.kever.ndigers
                 prxs = val["prxs"]
 
                 for idx, prx in enumerate(prxs):
                     cipher = core.Cipher(qb64=prx)
-                    agent.mgr.rb.prxs.put(keys=verfers[idx].qb64b, val=cipher)
+                    agent.mgr.rb.prxs.pin(keys=verfers[idx].qb64b, val=cipher)
 
                 if "nxts" in val:
                     nxts = val["nxts"]
@@ -412,7 +412,7 @@ class AgentResourceEnd:
 
                     for idx, prx in enumerate(nxts):
                         cipher = core.Cipher(qb64=prx)
-                        agent.mgr.rb.nxts.put(keys=digers[idx].qb64b, val=cipher)
+                        agent.mgr.rb.nxts.pin(keys=digers[idx].qb64b, val=cipher)
 
         agent.mgr.delete_sxlt()
 

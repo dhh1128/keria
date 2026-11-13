@@ -746,6 +746,64 @@ def test_agent_rotation_refuses_accepted_event(twoControllers, replay):
     assert agentState(agentA) == before
 
 
+def test_agent_rotation_randy_keys(helpers):
+    with helpers.openKeria() as (agency, agent, app, client):
+        authn = mock.Mock()
+        authn.inbound.return_value = None
+        app.add_route("/identifiers", aiding.IdentifierCollectionEnd())
+        app.add_route(
+            "/agent/{caid}", aiding.AgentResourceEnd(agency=agency, authn=authn)
+        )
+        client = testing.TestClient(app=app)
+
+        # A randy AID, whose key ciphertexts a passcode rotation re-encrypts
+        serder, signers, prxs, nxts = helpers.inceptRandy(
+            bran=b"0123456789abcdef", count=1
+        )
+        body = {
+            "name": "randy1",
+            "icp": serder.ked,
+            "sigs": [signer.sign(ser=serder.raw, index=0).qb64 for signer in signers],
+            "randy": {"prxs": prxs, "nxts": nxts, "transferable": True},
+        }
+        res = client.simulate_post(path="/identifiers", body=json.dumps(body))
+        assert res.status_code == 202
+
+        # Re-encrypt both under a new key
+        encrypter = core.Encrypter(
+            verkey=core.Salter().signer(transferable=False).verfer.qb64
+        )
+        nprxs = [encrypter.encrypt(ser=b"prx").qb64]
+        nnxts = [encrypter.encrypt(ser=b"nxt").qb64]
+
+        creator = keeping.SaltyCreator(
+            salt=core.Salter(raw=b"0123456789abcdefghijk").qb64,
+            stem=CTRL_STEM,
+            tier=coring.Tiers.low,
+        )
+        rot, sigs, _ = nextRotation(
+            creator, ridx=1, prior=agent.hby.kevers[agent.caid].serder
+        )
+        body = {
+            "rot": rot.ked,
+            "sigs": sigs,
+            "sxlt": agent.mgr.sxlt,
+            "keys": {serder.pre: {"prxs": nprxs, "nxts": nnxts}},
+        }
+
+        def accept(serder, sigers):
+            agent.hby.kvy.processEvent(serder=serder, sigers=sigers)
+
+        ctrlHab = agent.hby.habByName(agent.caid, ns="agent")
+        with mock.patch.object(ctrlHab, "rotate", side_effect=accept):
+            res = client.simulate_put(path=f"/agent/{agent.caid}", json=body)
+        assert res.status_code == 204
+
+        kever = agent.hby.habs[serder.pre].kever
+        assert agent.mgr.rb.prxs.get(kever.verfers[0].qb64b).qb64 == nprxs[0]
+        assert agent.mgr.rb.nxts.get(kever.ndigers[0].qb64b).qb64 == nnxts[0]
+
+
 def test_identifier_collection_end(helpers):
     salt = b"0123456789abcdef"
     salter = core.Salter(raw=salt)
