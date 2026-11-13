@@ -130,6 +130,11 @@ class SignedHeaderAuthenticator(Authenticator):
             raise kering.AuthNError("Missing signify inputs in signature")
 
         for inputage in inputs:
+            # The expected controller is named by Signify-Resource, so the
+            # signature has to cover it.
+            if expect is not None and "signify-resource" not in inputage.fields:
+                raise kering.AuthNError("Signature does not cover Signify-Resource")
+
             items = []
             for field in inputage.fields:
                 if field.startswith("@"):
@@ -169,6 +174,8 @@ class SignedHeaderAuthenticator(Authenticator):
                 if verfers is not None
                 else agent.agentHab.kevers[resource].verfers
             )
+            if not keys:
+                raise kering.AuthNError("No keys to verify the signature against")
             signages = ending.designature(signature)
             cig = signages[0].markers[inputage.name]
             if not keys[0].verify(sig=cig.raw, ser=ser):

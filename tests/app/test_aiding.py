@@ -510,12 +510,11 @@ def test_agent_resource_authentication(helpers, error):
         sigs = [signer.sign(ser=rot.raw, index=0).qb64 for signer in signers]
         body = {"rot": rot.ked, "sigs": sigs, "sxlt": agent.mgr.sxlt, "keys": {}}
 
-        def accept(serder, sigers):
-            agent.hby.kvy.processEvent(serder=serder, sigers=sigers)
-
         # Send request - same for all parameterized instances
         with (
-            mock.patch.object(ctrlHab, "rotate", side_effect=accept) as rotate,
+            mock.patch.object(
+                ctrlHab, "rotate", side_effect=acceptRotation(agent)
+            ) as rotate,
             mock.patch.object(agent.mgr, "delete_sxlt") as delete_sxlt,
         ):
             res = client.simulate_put(path=f"/agent/{agent.caid}", json=body)
@@ -549,6 +548,17 @@ def test_agent_resource_authentication(helpers, error):
 
 
 CTRL_STEM = "signify:controller"
+
+
+def acceptRotation(agent):
+    """Stand-in for the controller hab's rotate in openKeria, whose hab named
+    caid is the agent's own, so the event is processed into the agent's KEL
+    store directly."""
+
+    def accept(serder, sigers):
+        agent.hby.kvy.processEvent(serder=serder, sigers=sigers)
+
+    return accept
 
 
 def bootController(client, bran):
@@ -601,7 +611,14 @@ def nextRotation(creator, ridx, prior):
     return rot, [signer.sign(ser=rot.raw, index=0).qb64], signer
 
 
-def signedPut(client, caid, resource, signer, body):
+def signedPut(
+    client,
+    caid,
+    resource,
+    signer,
+    body,
+    fields=authing.SignedHeaderAuthenticator.DefaultFields,
+):
     """PUT /agent/{caid} with signed headers naming resource, signed by signer."""
     path = f"/agent/{caid}"
     headers = Hict(
@@ -616,7 +633,7 @@ def signedPut(client, caid, resource, signer, body):
         "PUT",
         path,
         headers,
-        fields=authing.SignedHeaderAuthenticator.DefaultFields,
+        fields=fields,
         signers=[signer],
         alg="ed25519",
         keyid=resource,
@@ -714,23 +731,35 @@ def test_agent_rotation_refuses_prior_keys(twoControllers):
     assert agentState(agentA) == before
 
 
-@pytest.mark.parametrize("replay", ["icp", "rot"])
-def test_agent_rotation_refuses_accepted_event(twoControllers, replay):
+@pytest.mark.parametrize(
+    "replay,status",
+    [
+        pytest.param("icp", 400, id="icp"),
+        pytest.param("earlier", 400, id="earlier-rot"),
+        pytest.param("latest", 400, id="latest-rot"),
+    ],
+)
+def test_agent_rotation_refuses_accepted_event(twoControllers, replay, status):
     client, agency, (icpA, creatorA), (icpB, creatorB) = twoControllers
     agentA = agency.get(icpA.pre)
 
-    # A rotates legitimately first
-    rot, sigs, signer = nextRotation(creatorA, ridx=1, prior=icpA)
-    body = {"rot": rot.ked, "sigs": sigs, "sxlt": "NEWSXLT", "keys": {}}
-    assert signedPut(client, icpA.pre, icpA.pre, signer, body).status_code == 204
+    # A rotates legitimately, twice
+    rot1, sigs1, signer1 = nextRotation(creatorA, ridx=1, prior=icpA)
+    body = {"rot": rot1.ked, "sigs": sigs1, "sxlt": "NEWSXLT", "keys": {}}
+    assert signedPut(client, icpA.pre, icpA.pre, signer1, body).status_code == 204
+    rot2, sigs2, signer2 = nextRotation(creatorA, ridx=2, prior=rot1)
+    body = {"rot": rot2.ked, "sigs": sigs2, "sxlt": "NEWSXLT", "keys": {}}
+    assert signedPut(client, icpA.pre, icpA.pre, signer2, body).status_code == 204
     before = agentState(agentA)
 
     # B sends one of A's already accepted events, signed as B
     if replay == "icp":
         event = icpA
         esigs = [ctrlSigner(creatorA, 0).sign(ser=icpA.raw, index=0).qb64]
+    elif replay == "earlier":
+        event, esigs = rot1, sigs1
     else:
-        event, esigs = rot, sigs
+        event, esigs = rot2, sigs2
     body = {
         "rot": event.ked,
         "sigs": esigs,
@@ -739,11 +768,95 @@ def test_agent_rotation_refuses_accepted_event(twoControllers, replay):
     }
     res = signedPut(client, icpA.pre, icpB.pre, ctrlSigner(creatorB, 0), body)
 
+    assert res.status_code == status
+    if status == 400:
+        assert res.json["description"] == (
+            f"'rot' is not the next rotation event for {icpA.pre}"
+        )
+    assert agentState(agentA) == before
+
+
+def test_agent_rotation_requires_signed_resource(twoControllers):
+    client, agency, (icpA, creatorA), _ = twoControllers
+    agentA = agency.get(icpA.pre)
+    before = agentState(agentA)
+
+    rot, sigs, signer = nextRotation(creatorA, ridx=1, prior=icpA)
+    body = {"rot": rot.ked, "sigs": sigs, "sxlt": "NEWSXLT", "keys": {}}
+    fields = ["@method", "@path", "Signify-Timestamp"]
+    res = signedPut(client, icpA.pre, icpA.pre, signer, body, fields=fields)
+
+    assert res.status_code == 403
+    assert agentState(agentA) == before
+
+
+def test_agent_rotation_refuses_unaccepted_event(twoControllers):
+    client, agency, (icpA, creatorA), (icpB, creatorB) = twoControllers
+    agentA = agency.get(icpA.pre)
+    before = agentState(agentA)
+
+    # A next rotation for A to keys A's prior next digests don't commit to
+    rot, sigs, signer = nextRotation(creatorB, ridx=1, prior=icpA)
+    body = {"rot": rot.ked, "sigs": sigs, "sxlt": "OTHERSXLT", "keys": {}}
+    res = signedPut(client, icpA.pre, icpA.pre, signer, body)
+
     assert res.status_code == 400
     assert res.json["description"] == (
-        f"'rot' is not the next rotation event for {icpA.pre}"
+        f"rotation event for {icpA.pre} was not accepted"
     )
     assert agentState(agentA) == before
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        pytest.param({"Eunknown": {"sxlt": "X"}}, id="unknown-salty"),
+        pytest.param({"Eunknown": {"prxs": ["X"]}}, id="unknown-randy"),
+    ],
+)
+def test_agent_rotation_checks_keys_before_rotating(twoControllers, keys):
+    client, agency, (icpA, creatorA), _ = twoControllers
+    agentA = agency.get(icpA.pre)
+    before = agentState(agentA)
+
+    rot, sigs, signer = nextRotation(creatorA, ridx=1, prior=icpA)
+    body = {"rot": rot.ked, "sigs": sigs, "sxlt": "NEWSXLT", "keys": keys}
+    res = signedPut(client, icpA.pre, icpA.pre, signer, body)
+
+    assert res.status_code == 400
+    assert agentState(agentA) == before
+
+
+def test_agent_rotation_signify_passcode(twoControllers):
+    """The rotation Signify clients send when the passcode changes: the new
+    passcode's key plus the old passcode's next key, weighted 1 and 0."""
+    client, agency, (icpA, creatorA), _ = twoControllers
+    agentA = agency.get(icpA.pre)
+
+    ncreator = keeping.SaltyCreator(
+        salt=core.Salter(raw=b"newpasscode0123456789").qb64,
+        stem=CTRL_STEM,
+        tier=coring.Tiers.low,
+    )
+    signer = ctrlSigner(ncreator, 0)
+    nsigner = ctrlSigner(ncreator, 1)
+    prior = ctrlSigner(creatorA, 1)
+    rot = eventing.rotate(
+        pre=icpA.pre,
+        keys=[signer.verfer.qb64, prior.verfer.qb64],
+        dig=icpA.said,
+        isith=["1", "0"],
+        nsith="1",
+        ndigs=[coring.Diger(ser=nsigner.verfer.qb64b).qb64],
+    )
+    sigs = [
+        prior.sign(ser=rot.raw, index=1, ondex=0).qb64,
+        signer.sign(ser=rot.raw, index=0).qb64,
+    ]
+    body = {"rot": rot.ked, "sigs": sigs, "sxlt": "NEWSXLT", "keys": {}}
+
+    assert signedPut(client, icpA.pre, icpA.pre, signer, body).status_code == 204
+    assert agentA.hby.kevers[icpA.pre].serder.said == rot.said
 
 
 def test_agent_rotation_randy_keys(helpers):
@@ -791,11 +904,14 @@ def test_agent_rotation_randy_keys(helpers):
             "keys": {serder.pre: {"prxs": nprxs, "nxts": nnxts}},
         }
 
-        def accept(serder, sigers):
-            agent.hby.kvy.processEvent(serder=serder, sigers=sigers)
-
         ctrlHab = agent.hby.habByName(agent.caid, ns="agent")
-        with mock.patch.object(ctrlHab, "rotate", side_effect=accept):
+        with mock.patch.object(ctrlHab, "rotate", side_effect=acceptRotation(agent)):
+            # One ciphertext too many is refused before rotating
+            extra = dict(body, keys={serder.pre: {"prxs": nprxs * 2, "nxts": nnxts}})
+            res = client.simulate_put(path=f"/agent/{agent.caid}", json=extra)
+            assert res.status_code == 400
+            assert agent.hby.kevers[agent.caid].sn == 0
+
             res = client.simulate_put(path=f"/agent/{agent.caid}", json=body)
         assert res.status_code == 204
 
