@@ -462,10 +462,28 @@ class AgentResourceEnd:
         ixn = serdering.SerderKERI(sad=ked)
         sigers = [core.Siger(qb64=sig) for sig in sigs]
 
+        # Only an interaction event of this controller is processed here.
+        if ixn.pre != caid or ixn.ilk != kering.Ilks.ixn:
+            raise falcon.HTTPBadRequest(
+                description=f"'ixn' is not an interaction event of {caid}"
+            )
+
         ctrlHab = agent.hby.habByName(caid, ns="agent")
 
-        ctrlHab.interact(serder=ixn, sigers=sigers)
-        agent.agentHab.kvy.processEvent(serder=ixn, sigers=sigers)
+        try:
+            ctrlHab.interact(serder=ixn, sigers=sigers)
+            agent.agentHab.kvy.processEvent(serder=ixn, sigers=sigers)
+        except kering.KeriError as ex:
+            raise falcon.HTTPBadRequest(
+                description=f"interaction event for {caid} was not accepted"
+            ) from ex
+
+        # The caller anchors seals from this event, so it has to be the
+        # controller's accepted latest event.
+        if agent.hby.kevers[caid].serder.said != ixn.said:
+            raise falcon.HTTPBadRequest(
+                description=f"interaction event for {caid} was not accepted"
+            )
 
         rep.status = falcon.HTTP_204
 

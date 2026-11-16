@@ -859,6 +859,83 @@ def test_agent_rotation_signify_passcode(twoControllers):
     assert agentA.hby.kevers[icpA.pre].serder.said == rot.said
 
 
+def approvalAes(agent):
+    """The authorizer event seal couple stored for the agent's inception."""
+    dip = agent.agentHab.kever.serder
+    couple = agent.hby.db.getAes(dbing.dgKey(agent.pre, dip.said))
+    return bytes(couple) if couple is not None else None
+
+
+def interactBody(serder, signers):
+    return {
+        "ixn": serder.ked,
+        "sigs": [s.sign(ser=serder.raw, index=i).qb64 for i, s in enumerate(signers)],
+    }
+
+
+@pytest.fixture()
+def approvedAgent(twoControllers):
+    """Controller A's agent, after A has approved the agent's delegation."""
+    client, agency, (icpA, creatorA), _ = twoControllers
+    agentA = agency.get(icpA.pre)
+    dip = agentA.agentHab.kever.serder
+    seal = dict(i=agentA.pre, s="0", d=dip.said)
+    ixn = eventing.interact(pre=icpA.pre, dig=icpA.said, sn=1, data=[seal])
+    body = interactBody(ixn, [ctrlSigner(creatorA, 0)])
+    res = client.simulate_put(f"/agent/{icpA.pre}?type=ixn", json=body)
+    assert res.status_code == 204
+    assert approvalAes(agentA) is not None
+    yield client, agentA, icpA, ixn, seal
+
+
+def test_agent_interaction_refuses_other_aid(approvedAgent):
+    client, agentA, icpA, _, seal = approvedAgent
+    before = approvalAes(agentA)
+
+    # An AID whose KEL the agent holds sends its own ixn, anchoring a seal
+    # for the agent's inception
+    with habbing.openHab(name="other", salt=b"0123456789abcdef", temp=True) as (
+        _,
+        other,
+    ):
+        parsing.Parser(kvy=agentA.hby.kvy).parse(
+            ims=bytearray(other.makeOwnInception()), local=False
+        )
+        assert other.pre in agentA.hby.kevers
+        ixn = eventing.interact(
+            pre=other.pre, dig=other.kever.serder.said, sn=1, data=[seal]
+        )
+        sigs = other.sign(ser=ixn.raw, verfers=other.kever.verfers, indexed=True)
+        body = {"ixn": ixn.ked, "sigs": [siger.qb64 for siger in sigs]}
+        res = client.simulate_put(f"/agent/{icpA.pre}?type=ixn", json=body)
+
+        assert res.status_code == 400
+        assert res.json["description"] == (
+            f"'ixn' is not an interaction event of {icpA.pre}"
+        )
+        assert agentA.hby.kevers[other.pre].sn == 0
+    assert approvalAes(agentA) == before
+
+
+def test_agent_interaction_refuses_unaccepted_event(approvedAgent):
+    client, agentA, icpA, approval, seal = approvedAgent
+    before = approvalAes(agentA)
+
+    # An ixn for A that A did not sign
+    stranger = core.Salter(raw=b"strangerstranger").signer()
+    ixn = eventing.interact(pre=icpA.pre, dig=approval.said, sn=2, data=[seal])
+    res = client.simulate_put(
+        f"/agent/{icpA.pre}?type=ixn", json=interactBody(ixn, [stranger])
+    )
+
+    assert res.status_code == 400
+    assert res.json["description"] == (
+        f"interaction event for {icpA.pre} was not accepted"
+    )
+    assert agentA.hby.kevers[icpA.pre].sn == 1
+    assert approvalAes(agentA) == before
+
+
 def test_agent_rotation_randy_keys(helpers):
     with helpers.openKeria() as (agency, agent, app, client):
         authn = mock.Mock()
