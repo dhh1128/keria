@@ -936,6 +936,26 @@ def test_agent_interaction_refuses_unaccepted_event(approvedAgent):
     assert approvalAes(agentA) == before
 
 
+def test_agent_interaction_refuses_earlier_event(approvedAgent, twoControllers):
+    client, agentA, icpA, approval, seal = approvedAgent
+    _, _, (_, creatorA), _ = twoControllers
+
+    # A moves on past its approval
+    ixn = eventing.interact(pre=icpA.pre, dig=approval.said, sn=2, data=[])
+    body = interactBody(ixn, [ctrlSigner(creatorA, 0)])
+    res = client.simulate_put(f"/agent/{icpA.pre}?type=ixn", json=body)
+    assert res.status_code == 204
+    before = approvalAes(agentA)
+
+    # The approval sent again is a duplicate, but no longer A's latest event
+    body = interactBody(approval, [ctrlSigner(creatorA, 0)])
+    res = client.simulate_put(f"/agent/{icpA.pre}?type=ixn", json=body)
+
+    assert res.status_code == 400
+    assert agentA.hby.kevers[icpA.pre].sn == 2
+    assert approvalAes(agentA) == before
+
+
 def test_agent_rotation_randy_keys(helpers):
     with helpers.openKeria() as (agency, agent, app, client):
         authn = mock.Mock()
